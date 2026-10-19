@@ -1,0 +1,85 @@
+# ==========================================
+# Data & Large Datasets (Crucial for speed)
+# ==========================================
+dataset/
+data/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# ==========================================
+# Model Weights & Large Binary Checkpoints
+# ==========================================
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.bin
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+*.weights
+
+# ==========================================
+# Outputs, Runs & Artifacts
+# ==========================================
+outputs/*
+!outputs/.gitkeep
+runs/
+wandb/
+mlruns/
+lightning_logs/
+logs/
+*.log
+
+# ==========================================
+# Virtual Environments
+# ==========================================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# Python Bytecode & Caches
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ==========================================
+# Jupyter Notebook Checkpoints & Cache
+# ==========================================
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# ==========================================
+# IDEs & OS Metadata
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# Environment Variables & Secrets
+# ==========================================
+.env
+.env.*
+!.env.example
