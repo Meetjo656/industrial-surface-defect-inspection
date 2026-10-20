@@ -15,7 +15,7 @@ from pathlib import Path
 import pickle
 import sys
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -73,34 +73,48 @@ class NormalReferenceBank:
 
     def fit(
         self,
-        train_good_dir: Union[str, Path],
+        train_good_data: Union[str, Path, Sequence[Union[str, Path]]],
         max_images: Optional[int] = None,
     ) -> "NormalReferenceBank":
         """Fits reference bank strictly from normal training images.
 
         Args:
-            train_good_dir: Directory containing normal training images.
+            train_good_data: Directory or sequence of image paths containing normal training images.
             max_images: Optional cap on number of training images.
         """
-        train_path = Path(train_good_dir)
-        if not train_path.exists():
-            raise FileNotFoundError(f"Training directory not found: {train_path}")
-
-        # Strict validation: prevent any test or defect data from contaminating reference bank
-        path_str = str(train_path).lower().replace("\\", "/")
         forbidden_keywords = ["test", "ground_truth", "scratch", "defect", "broken", "bent", "color"]
-        for kw in forbidden_keywords:
-            if f"/{kw}" in path_str or f"_{kw}" in path_str:
-                raise ValueError(
-                    f"VIOLATION: Attempted to build normal reference bank from non-training path: {train_path}. "
-                    "Only normal training images may be used."
-                )
 
-        image_files = sorted(
-            [f for f in train_path.glob("*.png")] + [f for f in train_path.glob("*.jpg")]
-        )
-        if not image_files:
-            raise FileNotFoundError(f"No image files found in: {train_path}")
+        if isinstance(train_good_data, (list, tuple)):
+            image_files = [Path(f) for f in train_good_data]
+            for f in image_files:
+                path_str = str(f).lower().replace("\\", "/")
+                for kw in forbidden_keywords:
+                    if f"/{kw}" in path_str or f"_{kw}" in path_str:
+                        raise ValueError(
+                            f"VIOLATION: Attempted to build normal reference bank from non-training path: {f}. "
+                            "Only normal training images may be used."
+                        )
+            if not image_files:
+                raise ValueError("No image files provided for reference bank.")
+        else:
+            train_path = Path(train_good_data)
+            if not train_path.exists():
+                raise FileNotFoundError(f"Training directory not found: {train_path}")
+
+            # Strict validation: prevent any test or defect data from contaminating reference bank
+            path_str = str(train_path).lower().replace("\\", "/")
+            for kw in forbidden_keywords:
+                if f"/{kw}" in path_str or f"_{kw}" in path_str:
+                    raise ValueError(
+                        f"VIOLATION: Attempted to build normal reference bank from non-training path: {train_path}. "
+                        "Only normal training images may be used."
+                    )
+
+            image_files = sorted(
+                [f for f in train_path.glob("*.png")] + [f for f in train_path.glob("*.jpg")]
+            )
+            if not image_files:
+                raise FileNotFoundError(f"No image files found in: {train_path}")
 
         if max_images is not None:
             image_files = image_files[:max_images]
@@ -376,21 +390,37 @@ def main():
     )
     args = parser.parse_args()
 
-    # 1. Build normal reference bank strictly from normal training images
-    bank = NormalReferenceBank()
-    bank.fit(args.train_dir, max_images=args.max_train_images)
+    # 1. Sort normal image paths once
+    normal_images = sorted(
+        [f for f in args.train_dir.glob("*.png")] + [f for f in args.train_dir.glob("*.jpg")]
+    )
+    if not normal_images:
+        raise FileNotFoundError(f"No image files found in: {args.train_dir}")
 
-    # 2. Save reference bank
+    # 2. Split into reference-bank and held-out sets
+    if args.max_train_images is not None and args.max_train_images < len(normal_images):
+        ref_images = normal_images[:args.max_train_images]
+        held_out_images = normal_images[args.max_train_images:]
+    else:
+        split_idx = max(1, int(len(normal_images) * 0.9)) if len(normal_images) > 1 else len(normal_images)
+        ref_images = normal_images[:split_idx]
+        held_out_images = normal_images[split_idx:] if len(normal_images) > 1 else normal_images[:1]
+
+    # 3. Build reference bank strictly from reference set only
+    bank = NormalReferenceBank()
+    bank.fit(ref_images)
+
+    # 4. Save reference bank
     bank.save(args.output_model)
 
-    # 3. Benchmark on a normal training image
-    if args.benchmark:
-        sample_img = next(args.train_dir.glob("*.png"))
+    # 5. Benchmark and score one image from the held-out set
+    if args.benchmark and held_out_images:
+        sample_img = held_out_images[0]
         benchmark_kdtree_vs_bruteforce(bank, sample_img)
 
-        # Sanity check: inference on normal sample
+        # Sanity check: inference on held-out normal sample
         _, heatmap, score = bank.predict_anomaly_map(sample_img)
-        print(f"[TEST] Sanity check on normal sample: max_heatmap={heatmap.max():.4f}, image_score={score:.4f}")
+        print(f"[TEST] Held-out normal sample ({sample_img.name}): max_heatmap={heatmap.max():.4f}, image_score={score:.4f}")
 
 
 if __name__ == "__main__":
