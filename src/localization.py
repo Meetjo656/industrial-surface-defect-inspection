@@ -239,9 +239,9 @@ def predict_with_coverage(
             - image_score: Overall image anomaly score (95th percentile patch score).
             - transform: Preprocessing coordinate transformation metadata.
     """
-    canvas_img, canvas_mask, transform = preprocess_image(
+    canvas_img, canvas_mask, transform = list(preprocess_image(
         image_input, target_size=bank.config.canvas_size, return_transform=True
-    )
+    ))
     scored_patches = bank.predict_patch_scores(image_input)
 
     h, w = bank.config.canvas_size[1], bank.config.canvas_size[0]
