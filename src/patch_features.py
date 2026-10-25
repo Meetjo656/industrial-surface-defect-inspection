@@ -256,7 +256,7 @@ def build_normal_reference_bank(
 
     bank: List[PatchRecord] = []
     for p in image_paths:
-        norm_img, mask = preprocess_image(p, target_size=DEFAULT_CANVAS_SIZE)
+        norm_img, mask = list(preprocess_image(p, target_size=DEFAULT_CANVAS_SIZE))
         patches = extract_image_patches(
             norm_img, mask, patch_size=patch_size, min_fg_ratio=min_fg_ratio, image_id=str(p.name)
         )
@@ -268,7 +268,7 @@ def build_normal_reference_bank(
 
 def test_feature_dimensions(sample_image_path: Path) -> bool:
     """Verifies feature vector dimensions, ranges, and patch record schema."""
-    norm_img, mask = preprocess_image(sample_image_path, target_size=DEFAULT_CANVAS_SIZE)
+    norm_img, mask = list(preprocess_image(sample_image_path, target_size=DEFAULT_CANVAS_SIZE))
     patches = extract_image_patches(
         norm_img, mask, patch_size=DEFAULT_PATCH_SIZE, min_fg_ratio=DEFAULT_MIN_FG_RATIO
     )
@@ -316,8 +316,8 @@ def visualize_patch_grid_and_features(
 
     RULE: Defective test sample is purely for inspection/visualization, not model fitting.
     """
-    norm_img_normal, mask_normal = preprocess_image(normal_path, target_size=DEFAULT_CANVAS_SIZE)
-    norm_img_defect, mask_defect = preprocess_image(defective_path, target_size=DEFAULT_CANVAS_SIZE)
+    norm_img_normal, mask_normal = list(preprocess_image(normal_path, target_size=DEFAULT_CANVAS_SIZE))
+    norm_img_defect, mask_defect = list(preprocess_image(defective_path, target_size=DEFAULT_CANVAS_SIZE))
 
     normal_patches = extract_image_patches(
         norm_img_normal, mask_normal, patch_size=patch_size, min_fg_ratio=min_fg_ratio, image_id="normal"
