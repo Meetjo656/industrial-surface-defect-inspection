@@ -125,7 +125,7 @@ class NormalReferenceBank:
         raw_regional_features: Dict[Tuple[int, int], List[np.ndarray]] = {}
 
         for idx, img_file in enumerate(image_files):
-            norm_img, mask = preprocess_image(img_file, target_size=self.config.canvas_size)
+            norm_img, mask = list(preprocess_image(img_file, target_size=self.config.canvas_size))
             patches = extract_image_patches(
                 norm_img,
                 mask,
@@ -217,7 +217,7 @@ class NormalReferenceBank:
         if self.feature_mean is None or self.feature_std is None:
             raise RuntimeError("Reference bank not fitted or loaded.")
 
-        norm_img, mask = preprocess_image(image_input, target_size=self.config.canvas_size)
+        norm_img, mask = list(preprocess_image(image_input, target_size=self.config.canvas_size))
         patches = extract_image_patches(
             norm_img,
             mask,
@@ -239,7 +239,7 @@ class NormalReferenceBank:
         image_input: Union[str, Path, np.ndarray],
     ) -> Tuple[np.ndarray, np.ndarray, float]:
         """Generates 2D anomaly heatmap on canvas from patch nearest-neighbor distances."""
-        norm_img, mask = preprocess_image(image_input, target_size=self.config.canvas_size)
+        norm_img, mask = list(preprocess_image(image_input, target_size=self.config.canvas_size))
         scored_patches = self.predict_patch_scores(image_input)
 
         h, w = self.config.canvas_size[1], self.config.canvas_size[0]
@@ -292,8 +292,14 @@ class NormalReferenceBank:
         if not p.exists():
             raise FileNotFoundError(f"Model file not found: {p}")
 
+        class _DetectorUnpickler(pickle.Unpickler):
+            def find_class(self, module, name):
+                if name == "DetectorConfig":
+                    return DetectorConfig
+                return super().find_class(module, name)
+
         with open(p, "rb") as f:
-            payload = pickle.load(f)
+            payload = _DetectorUnpickler(f).load()
 
         bank = cls(config=payload["config"])
         bank.regional_trees = payload["regional_trees"]
@@ -312,7 +318,7 @@ def benchmark_kdtree_vs_bruteforce(
     sample_img_path: Path,
 ) -> Dict[str, float]:
     """Compares scikit-learn KDTree vs brute-force search speed and distance consistency."""
-    norm_img, mask = preprocess_image(sample_img_path, target_size=bank.config.canvas_size)
+    norm_img, mask = list(preprocess_image(sample_img_path, target_size=bank.config.canvas_size))
     patches = extract_image_patches(norm_img, mask, min_fg_ratio=bank.config.min_fg_ratio)
     std_feats = [
         (p.grid_coords, (p.feature_vector - bank.feature_mean) / bank.feature_std)

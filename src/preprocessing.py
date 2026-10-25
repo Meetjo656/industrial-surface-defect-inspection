@@ -6,7 +6,7 @@ Preserves original image pixel data alongside a separate binary foreground mask.
 
 import argparse
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,7 +17,8 @@ def preprocess_image(
     target_size: Tuple[int, int] = (256, 256),
     margin: float = 0.02,
     canvas_fill: Optional[Union[int, Tuple[int, int, int]]] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+    return_transform: bool = False,
+) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, Dict[str, Any]]]:
     """Hybrid foreground extraction and aspect-ratio-preserving canvas normalization.
 
     Args:
@@ -127,6 +128,16 @@ def preprocess_image(
     canvas_img[offset_y:offset_y + new_h, offset_x:offset_x + new_w] = resized_img
     canvas_mask[offset_y:offset_y + new_h, offset_x:offset_x + new_w] = resized_mask
 
+    if return_transform:
+        transform = {
+            "crop_box": (x1, y1, x2, y2),
+            "offset": (offset_x, offset_y),
+            "scaled_size": (new_w, new_h),
+            "orig_size": (h, w),
+            "scale": scale,
+        }
+        return canvas_img, canvas_mask, transform
+
     return canvas_img, canvas_mask
 
 
@@ -139,14 +150,31 @@ def load_image(image_path: Path, target_size: Optional[Tuple[int, int]] = (256, 
     return norm_img.astype(np.float32) / 255.0
 
 
-def load_mask(mask_path: Path, target_size: Optional[Tuple[int, int]] = (256, 256)) -> np.ndarray:
+def load_mask(
+    mask_path: Path,
+    target_size: Optional[Tuple[int, int]] = (256, 256),
+    transform: Optional[Dict[str, Any]] = None,
+) -> np.ndarray:
     """Loads a ground truth mask with aspect-ratio-preserving canvas normalization to {0, 1}."""
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     if mask is None:
         raise FileNotFoundError(f"Failed to read mask: {mask_path}")
+    bin_mask = (mask > 128).astype(np.uint8)
+
+    if transform is not None and target_size is not None:
+        target_w, target_h = target_size
+        canvas_mask = np.zeros((target_h, target_w), dtype=np.uint8)
+        x1, y1, x2, y2 = transform["crop_box"]
+        offset_x, offset_y = transform["offset"]
+        new_w, new_h = transform["scaled_size"]
+        cropped = bin_mask[y1:y2, x1:x2]
+        resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        canvas_mask[offset_y:offset_y + new_h, offset_x:offset_x + new_w] = resized
+        return canvas_mask
+
     if target_size is not None:
-        mask = cv2.resize(mask, target_size, interpolation=cv2.INTER_NEAREST)
-    return (mask > 128).astype(np.uint8)
+        bin_mask = cv2.resize(bin_mask, target_size, interpolation=cv2.INTER_NEAREST)
+    return bin_mask
 
 
 def run_visualization_test(
