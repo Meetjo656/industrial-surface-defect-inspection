@@ -146,7 +146,7 @@ def load_image(image_path: Path, target_size: Optional[Tuple[int, int]] = (256, 
     if target_size is None:
         img_bgr = cv2.imread(str(image_path))
         return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    norm_img, _ = preprocess_image(image_path, target_size=target_size)
+    norm_img, _ = list(preprocess_image(image_path, target_size=target_size))
     return norm_img.astype(np.float32) / 255.0
 
 
@@ -213,8 +213,8 @@ def run_visualization_test(
         raise FileNotFoundError("Could not find normal and defective sample images in dataset.")
 
     # Process samples
-    norm_img_normal, mask_normal = preprocess_image(normal_path)
-    norm_img_defect, mask_defect = preprocess_image(defective_path)
+    norm_img_normal, mask_normal = list(preprocess_image(normal_path))
+    norm_img_defect, mask_defect = list(preprocess_image(defective_path))
 
     orig_normal = cv2.cvtColor(cv2.imread(str(normal_path)), cv2.COLOR_BGR2RGB)
     orig_defect = cv2.cvtColor(cv2.imread(str(defective_path)), cv2.COLOR_BGR2RGB)
