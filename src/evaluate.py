@@ -9,11 +9,12 @@ import json
 from pathlib import Path
 import sys
 import time
+from typing import Optional, Tuple, Union
 
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import accuracy_score, average_precision_score, roc_auc_score
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -136,6 +137,45 @@ def evaluate(
     print(f"     Pixel AUROC:       {results['pixel_auroc']}")
     print(f"     Metrics saved ->   {out_dir / 'metrics.json'}")
     return results
+
+
+def calculate_mAPscore_accuracy(
+    model_path: Union[str, Path] = Path("outputs/full_dataset_model.pkl"),
+    data_dir: Union[str, Path] = Path("dataset"),
+    threshold: Optional[float] = None,
+) -> Tuple[float, float]:
+    """Calculates image-level mAP (Average Precision) and classification Accuracy."""
+    model = AnomalyModel.load(model_path)
+    data_dir = Path(data_dir)
+
+    test_subdirs = sorted(list(data_dir.glob("*/test")))
+    if not test_subdirs:
+        test_dir = data_dir / "test"
+        if test_dir.exists():
+            test_subdirs = [test_dir]
+        else:
+            raise FileNotFoundError(f"No test folders found in {data_dir}")
+
+    y_true, y_score = [], []
+    for test_d in test_subdirs:
+        for subcat in sorted([d for d in test_d.iterdir() if d.is_dir()]):
+            is_defect = int(subcat.name != "good")
+            for img_path in sorted(list(subcat.glob("*.png")) + list(subcat.glob("*.jpg"))):
+                score, _, _, _ = model.predict(img_path)
+                y_true.append(is_defect)
+                y_score.append(score)
+
+    if not y_true:
+        return 0.0, 0.0
+
+    map_score = float(average_precision_score(y_true, y_score))
+
+    # If threshold not specified, use median score as default decision boundary
+    thresh = threshold if threshold is not None else float(np.median(y_score))
+    y_pred = [int(s >= thresh) for s in y_score]
+    accuracy = float(accuracy_score(y_true, y_pred))
+
+    return map_score, accuracy
 
 
 def main():
