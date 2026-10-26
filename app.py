@@ -1,6 +1,7 @@
 """Gradio Web Deployment Application for Industrial Surface Defect Inspection."""
 
 import argparse
+import os
 from pathlib import Path
 import sys
 from typing import Dict, Tuple, Union
@@ -14,8 +15,17 @@ if str(_REPO_ROOT) not in sys.path:
 
 from src.model import AnomalyModel
 
+HF_REPO_ID = os.getenv("HF_MODEL_REPO", "Meetjo656/industrial-defect-inspection-model")
+HF_FILENAME = os.getenv("HF_MODEL_FILENAME", "full_dataset_model.pkl")
 
-def get_default_model_path() -> Path:
+
+def ensure_model_artifact(model_path: Union[str, Path] = None) -> Path:
+    """Resolves local artifact or downloads versioned model from Hugging Face Hub during startup."""
+    if model_path:
+        p = Path(model_path)
+        if p.exists():
+            return p
+
     candidates = [
         Path("outputs/full_dataset_model.pkl"),
         Path("outputs/metal_nut_isolation_forest.pkl"),
@@ -23,7 +33,24 @@ def get_default_model_path() -> Path:
     for c in candidates:
         if c.exists():
             return c
-    return candidates[0]
+
+    # Download from Hugging Face Model Hub during Space startup
+    try:
+        from huggingface_hub import hf_hub_download
+        print(f"[*] Downloading model from Hugging Face repo '{HF_REPO_ID}/{HF_FILENAME}'...")
+        downloaded = hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=HF_FILENAME,
+            local_dir="outputs",
+        )
+        return Path(downloaded)
+    except Exception as e:
+        print(f"[!] Note: Hugging Face download fallback ({e})")
+        return candidates[0]
+
+
+def get_default_model_path() -> Path:
+    return ensure_model_artifact()
 
 
 class DefectInspectionApp:

@@ -15,7 +15,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from app import DefectInspectionApp, get_default_model_path
+from app import DefectInspectionApp, ensure_model_artifact, get_default_model_path
 from src.model import AnomalyModel, discover_train_images
 from src.preprocessing import preprocess_image
 
@@ -129,3 +129,15 @@ def test_gradio_app_engine_inference(dummy_surface_image):
     assert raw_hm is not None
     assert "Verdict:" in summary_md
     assert overlay.shape[:2] == raw_hm.shape[:2]
+
+
+def test_ensure_model_artifact_resolution():
+    """Validates local artifact resolution and graceful fallback."""
+    # Existing local file returns directly
+    local_path = get_default_model_path()
+    resolved = ensure_model_artifact(local_path)
+    assert resolved == local_path
+
+    # Unreachable path falls back gracefully
+    fallback = ensure_model_artifact(Path("non_existent_model.pkl"))
+    assert fallback is not None
