@@ -204,7 +204,7 @@ class AnomalyModel:
         self,
         image_input: Union[str, Path, np.ndarray],
         custom_threshold: Optional[float] = None,
-        fallback_threshold: float = 0.5,
+        fallback_threshold: float = 0.58,
     ) -> Dict[str, Any]:
         """Performs inference and evaluates production binary decision."""
         score, heatmap, mask, transform = self.predict(image_input)

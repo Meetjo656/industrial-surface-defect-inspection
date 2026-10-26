@@ -108,7 +108,7 @@ class DefectInspectionApp:
         model = self.get_or_load_model(category)
         if model and model.threshold is not None:
             return round(float(model.threshold), 4)
-        return 0.5
+        return 0.58
 
     def inspect(self, image: np.ndarray, category: str = "full_dataset", custom_threshold: float = None):
         if image is None:
@@ -129,7 +129,7 @@ class DefectInspectionApp:
 
         score, heatmap, mask, transform = model.predict(image)
         thresh = custom_threshold if custom_threshold is not None else (
-            model.threshold if model.threshold is not None else 0.5
+            model.threshold if model.threshold is not None else 0.58
         )
 
         is_defect = bool(score >= thresh)
