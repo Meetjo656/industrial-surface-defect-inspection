@@ -6,6 +6,7 @@ Supports single category folders or entire multi-category dataset roots.
 """
 
 import argparse
+import json
 from pathlib import Path
 import pickle
 import sys
@@ -62,7 +63,7 @@ def extract_image_patches(
 
 
 def discover_train_images(input_path: Path, max_per_cat: Optional[int] = None) -> List[Path]:
-    """Discovers normal training images across single or multiple dataset categories."""
+    """Discovers normal training images strictly following expected train/good structure."""
     p = Path(input_path)
     if not p.exists():
         raise FileNotFoundError(f"Directory not found: {p}")
@@ -76,31 +77,46 @@ def discover_train_images(input_path: Path, max_per_cat: Optional[int] = None) -
             if max_per_cat:
                 cat_files = cat_files[:max_per_cat]
             all_files.extend(cat_files)
-        return all_files
+        if all_files:
+            return all_files
 
     # Single train/good directory
     if p.name == "good" and p.parent.name == "train":
         files = sorted(list(p.glob("*.png")) + list(p.glob("*.jpg")))
-        return files[:max_per_cat] if max_per_cat else files
+        if files:
+            return files[:max_per_cat] if max_per_cat else files
 
     # Category directory (e.g. dataset/metal_nut)
     good_dir = p / "train" / "good"
     if good_dir.exists():
         files = sorted(list(good_dir.glob("*.png")) + list(good_dir.glob("*.jpg")))
-        return files[:max_per_cat] if max_per_cat else files
+        if files:
+            return files[:max_per_cat] if max_per_cat else files
 
-    # Fallback: all images in path
-    files = sorted(list(p.glob("**/*.png")) + list(p.glob("**/*.jpg")))
-    return files[:max_per_cat] if max_per_cat else files
+    raise ValueError(
+        f"Directory '{p}' lacks expected 'train/good' structure. "
+        "Strict verification requires normal images inside '<category>/train/good'."
+    )
 
 
 class AnomalyModel:
-    """Isolation Forest anomaly detection on local surface patches."""
+    """Isolation Forest anomaly detection on local surface patches with persistent config."""
 
-    def __init__(self, n_estimators: int = 100, contamination: Union[str, float] = "auto"):
-        self.patch_size = 16
-        self.stride = 16
-        self.min_fg = 0.5
+    def __init__(
+        self,
+        n_estimators: int = 100,
+        contamination: Union[str, float] = "auto",
+        patch_size: int = 16,
+        stride: int = 16,
+        min_fg: float = 0.5,
+        threshold: Optional[float] = None,
+    ):
+        self.patch_size = patch_size
+        self.stride = stride
+        self.min_fg = min_fg
+        self.threshold = threshold
+        self.n_estimators = n_estimators
+        self.contamination = contamination
         self.scaler = StandardScaler()
         self.forest = IsolationForest(
             n_estimators=n_estimators,
@@ -108,6 +124,22 @@ class AnomalyModel:
             random_state=42,
             n_jobs=-1,
         )
+
+    def set_threshold(self, threshold: float) -> "AnomalyModel":
+        """Sets the production defect decision boundary."""
+        self.threshold = float(threshold)
+        return self
+
+    def get_config(self) -> Dict[str, Any]:
+        """Returns serializable configuration dictionary."""
+        return {
+            "patch_size": self.patch_size,
+            "stride": self.stride,
+            "min_fg": self.min_fg,
+            "threshold": self.threshold,
+            "n_estimators": self.n_estimators,
+            "contamination": self.contamination,
+        }
 
     def fit(self, normal_image_paths: List[Path], max_patches: int = 250000) -> "AnomalyModel":
         """Fits model strictly using normal training images."""
@@ -168,17 +200,62 @@ class AnomalyModel:
         image_score = float(np.percentile(patch_scores, 95))
         return image_score, heatmap, mask, transform
 
+    def predict_decision(
+        self,
+        image_input: Union[str, Path, np.ndarray],
+        fallback_threshold: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Performs inference and evaluates production binary decision."""
+        score, heatmap, mask, transform = self.predict(image_input)
+        effective_threshold = self.threshold if self.threshold is not None else fallback_threshold
+        is_defect = bool(score >= effective_threshold)
+        return {
+            "is_defect": is_defect,
+            "verdict": "DEFECTIVE" if is_defect else "NORMAL",
+            "score": round(float(score), 4),
+            "threshold": round(float(effective_threshold), 4),
+            "heatmap": heatmap,
+            "mask": mask,
+            "transform": transform,
+        }
+
     def save(self, path: Union[str, Path]) -> None:
+        """Saves model parameters and configuration to disk."""
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        config = self.get_config()
+
+        # Serialize model weights and config bundle
         with open(p, "wb") as f:
-            pickle.dump({"scaler": self.scaler, "forest": self.forest}, f)
+            pickle.dump({"scaler": self.scaler, "forest": self.forest, "config": config}, f)
+
+        # Also write readable companion JSON config
+        json_path = p.with_suffix(".json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
 
     @classmethod
     def load(cls, path: Union[str, Path]) -> "AnomalyModel":
-        with open(path, "rb") as f:
+        """Loads model parameters and restored configuration."""
+        p = Path(path)
+        with open(p, "rb") as f:
             data = pickle.load(f)
-        obj = cls()
+
+        config = data.get("config", {})
+        if not config:
+            json_path = p.with_suffix(".json")
+            if json_path.exists():
+                with open(json_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+
+        obj = cls(
+            n_estimators=config.get("n_estimators", 100),
+            contamination=config.get("contamination", "auto"),
+            patch_size=config.get("patch_size", 16),
+            stride=config.get("stride", 16),
+            min_fg=config.get("min_fg", 0.5),
+            threshold=config.get("threshold", None),
+        )
         obj.scaler = data["scaler"]
         obj.forest = data["forest"]
         return obj
