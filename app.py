@@ -196,14 +196,36 @@ def create_gradio_app(model_path: Union[str, Path] = None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Launch Gradio Defect Inspection App")
-    parser.add_argument("--model-path", type=Path, default=get_default_model_path())
-    parser.add_argument("--port", type=int, default=7860)
-    parser.add_argument("--share", action="store_true", help="Create public Gradio link")
+    parser = argparse.ArgumentParser(
+        description="Launch Gradio Defect Inspection App"
+    )
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=get_default_model_path()
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", 7860))
+    )
+
+    parser.add_argument(
+        "--share",
+        action="store_true",
+        help="Create public Gradio link"
+    )
+
     args = parser.parse_args()
 
     demo = create_gradio_app(args.model_path)
-    demo.launch(server_port=args.port, share=args.share)
+
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=args.port,
+        share=args.share
+    )
 
 
 if __name__ == "__main__":
