@@ -14,7 +14,7 @@ from typing import Optional, Tuple, Union
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import accuracy_score, average_precision_score, roc_auc_score
+from sklearn.metrics import accuracy_score, average_precision_score, f1_score, precision_recall_curve, roc_auc_score
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -96,6 +96,24 @@ def evaluate(
     img_auroc = float(roc_auc_score(y_true_img, y_score_img)) if has_both else 0.0
     img_ap = float(average_precision_score(y_true_img, y_score_img)) if has_both else 0.0
 
+    # Production decision threshold selection via F1 optimization on validation data
+    if has_both:
+        precisions, recalls, thresholds = precision_recall_curve(y_true_img, y_score_img)
+        f1_scores = (2 * precisions * recalls) / np.maximum(precisions + recalls, 1e-8)
+        best_idx = int(np.argmax(f1_scores[:-1])) if len(thresholds) > 0 else 0
+        opt_thresh = float(thresholds[best_idx]) if len(thresholds) > 0 else float(np.median(y_score_img))
+        best_f1 = float(f1_scores[best_idx]) if len(thresholds) > 0 else 0.0
+    else:
+        opt_thresh = float(np.median(y_score_img)) if y_score_img else 0.5
+        best_f1 = 0.0
+
+    y_pred = [int(s >= opt_thresh) for s in y_score_img]
+    accuracy = float(accuracy_score(y_true_img, y_pred)) if y_true_img else 0.0
+
+    # Persist validated threshold into model artifact
+    model.set_threshold(opt_thresh)
+    model.save(model_path)
+
     # Pixel-level AUROC (subsampled for speed)
     if pixel_y_true:
         all_px_true = np.concatenate(pixel_y_true)
@@ -109,6 +127,9 @@ def evaluate(
         "image_auroc": round(img_auroc, 4),
         "image_ap": round(img_ap, 4),
         "pixel_auroc": round(px_auroc, 4),
+        "decision_threshold": round(opt_thresh, 4),
+        "f1_score": round(best_f1, 4),
+        "accuracy": round(accuracy, 4),
         "test_images_total": len(y_true_img),
         "evaluation_time_sec": round(time.time() - t0, 2),
         "category_means": {k: round(float(np.mean(v)), 4) for k, v in category_scores.items() if v},
@@ -117,13 +138,14 @@ def evaluate(
     with open(out_dir / "metrics.json", "w") as f:
         json.dump(results, f, indent=2)
 
-    # Summary plot
-    plt.figure(figsize=(7.5, 4.5))
+    # Summary plot with decision threshold
+    plt.figure(figsize=(8.0, 4.8))
     normal_sc = [s for y, s in zip(y_true_img, y_score_img) if y == 0]
     defect_sc = [s for y, s in zip(y_true_img, y_score_img) if y == 1]
     plt.hist(normal_sc, bins=20, alpha=0.6, color="green", label=f"Normal (n={len(normal_sc)})", density=True)
     plt.hist(defect_sc, bins=25, alpha=0.6, color="red", label=f"Defective (n={len(defect_sc)})", density=True)
-    plt.title(f"Score Distribution (AUROC = {img_auroc:.4f})")
+    plt.axvline(opt_thresh, color="blue", linestyle="--", linewidth=2, label=f"Threshold = {opt_thresh:.4f}")
+    plt.title(f"Score Distribution (AUROC={img_auroc:.4f}, Acc={accuracy:.2%})")
     plt.xlabel("Anomaly Score")
     plt.ylabel("Density")
     plt.legend()
@@ -132,10 +154,12 @@ def evaluate(
     plt.close()
 
     print(f"\n[OK] Evaluation complete in {results['evaluation_time_sec']}s:")
-    print(f"     Total test images: {results['test_images_total']}")
-    print(f"     Image AUROC:       {results['image_auroc']}")
-    print(f"     Pixel AUROC:       {results['pixel_auroc']}")
-    print(f"     Metrics saved ->   {out_dir / 'metrics.json'}")
+    print(f"     Total test images:  {results['test_images_total']}")
+    print(f"     Image AUROC:        {results['image_auroc']}")
+    print(f"     Pixel AUROC:        {results['pixel_auroc']}")
+    print(f"     Decision Threshold: {results['decision_threshold']}")
+    print(f"     Accuracy:           {results['accuracy']}")
+    print(f"     Metrics saved ->    {out_dir / 'metrics.json'}")
     return results
 
 
@@ -170,8 +194,13 @@ def calculate_mAPscore_accuracy(
 
     map_score = float(average_precision_score(y_true, y_score))
 
-    # If threshold not specified, use median score as default decision boundary
-    thresh = threshold if threshold is not None else float(np.median(y_score))
+    # If threshold not specified, use model threshold or median score
+    if threshold is not None:
+        thresh = threshold
+    elif model.threshold is not None:
+        thresh = model.threshold
+    else:
+        thresh = float(np.median(y_score))
     y_pred = [int(s >= thresh) for s in y_score]
     accuracy = float(accuracy_score(y_true, y_pred))
 

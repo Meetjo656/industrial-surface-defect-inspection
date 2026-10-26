@@ -11,3 +11,6 @@ tqdm>=4.65.0
 jupyter>=1.0.0
 pandas>=2.0.0
 opencv-python>=4.7.0
+gradio>=3.50.0
+zenml>=0.50.0
+pytest>=7.0.0
