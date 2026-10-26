@@ -15,8 +15,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 from src.model import AnomalyModel
 
-HF_REPO_ID = os.getenv("HF_MODEL_REPO", "Meetjo656/industrial-defect-inspection-model")
-HF_FILENAME = os.getenv("HF_MODEL_FILENAME", "full_dataset_model.pkl")
+HF_REPO_ID = os.getenv("HF_MODEL_REPO", "nerdyoutlier/Industrial_Surface_Defect_Inspection")
+HF_FILENAME = os.getenv("HF_MODEL_FILENAME", "outputs/full_dataset_model.pkl")
 
 
 def ensure_model_artifact(model_path: Union[str, Path] = None) -> Path:
@@ -28,21 +28,27 @@ def ensure_model_artifact(model_path: Union[str, Path] = None) -> Path:
 
     candidates = [
         Path("outputs/full_dataset_model.pkl"),
+        Path("full_dataset_model.pkl"),
         Path("outputs/metal_nut_isolation_forest.pkl"),
     ]
     for c in candidates:
         if c.exists():
             return c
 
-    # Download from Hugging Face Model Hub during Space startup
+    # Download from Hugging Face Model Hub during Space/Render startup
     try:
         from huggingface_hub import hf_hub_download
         print(f"[*] Downloading model from Hugging Face repo '{HF_REPO_ID}/{HF_FILENAME}'...")
-        downloaded = hf_hub_download(
-            repo_id=HF_REPO_ID,
-            filename=HF_FILENAME,
-            local_dir="outputs",
-        )
+        try:
+            downloaded = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=HF_FILENAME,
+            )
+        except Exception:
+            downloaded = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename="full_dataset_model.pkl",
+            )
         return Path(downloaded)
     except Exception as e:
         print(f"[!] Note: Hugging Face download fallback ({e})")
