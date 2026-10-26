@@ -29,11 +29,56 @@ def get_default_model_path() -> Path:
 class DefectInspectionApp:
     """Core inference engine for Gradio deployment."""
 
-    def __init__(self, model_path: Union[str, Path]):
+    def __init__(self, model_path: Union[str, Path], dataset_dir: Union[str, Path] = "dataset"):
         self.model_path = Path(model_path)
+        self.dataset_dir = Path(dataset_dir)
         self.model = None
         if self.model_path.exists():
             self.model = AnomalyModel.load(self.model_path)
+            if self.model.threshold is None:
+                self.calibrate_threshold(n_samples=10)
+
+    def calibrate_threshold(self, n_samples: int = 10) -> float:
+        """Calibrates production threshold on a 10-image balanced validation set."""
+        if self.model is None or not self.dataset_dir.exists():
+            return 0.5
+
+        normal_imgs = sorted(
+            list(self.dataset_dir.glob("*/test/good/*.png")) + list(self.dataset_dir.glob("*/test/good/*.jpg"))
+        )
+        defect_imgs = sorted([
+            p for p in (list(self.dataset_dir.glob("*/test/*/*.png")) + list(self.dataset_dir.glob("*/test/*/*.jpg")))
+            if p.parent.name != "good"
+        ])
+
+        if not normal_imgs or not defect_imgs:
+            self.model.set_threshold(0.5)
+            return 0.5
+
+        n_norm = n_samples // 2
+        n_def = n_samples - n_norm
+        val_imgs = normal_imgs[:n_norm] + defect_imgs[:n_def]
+        y_true = [0] * len(val_imgs[:n_norm]) + [1] * len(val_imgs[n_norm:])
+
+        y_score = []
+        for p in val_imgs:
+            score, _, _, _ = self.model.predict(p)
+            y_score.append(score)
+
+        from sklearn.metrics import precision_recall_curve
+        precisions, recalls, thresholds = precision_recall_curve(y_true, y_score)
+        f1_scores = (2 * precisions * recalls) / np.maximum(precisions + recalls, 1e-8)
+        best_idx = int(np.argmax(f1_scores[:-1])) if len(thresholds) > 0 else 0
+        calibrated_thresh = float(thresholds[best_idx]) if len(thresholds) > 0 else float(np.mean(y_score))
+
+        self.model.set_threshold(calibrated_thresh)
+        try:
+            self.model.save(self.model_path)
+            print(f"[OK] Calibrated threshold on {len(val_imgs)} validation images: {calibrated_thresh:.4f}")
+        except Exception as e:
+            print(f"[!] Warning: Could not save calibrated model: {e}")
+
+        return calibrated_thresh
 
     def inspect(self, image: np.ndarray, custom_threshold: float = None):
         if image is None:

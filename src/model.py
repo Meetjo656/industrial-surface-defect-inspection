@@ -203,11 +203,18 @@ class AnomalyModel:
     def predict_decision(
         self,
         image_input: Union[str, Path, np.ndarray],
+        custom_threshold: Optional[float] = None,
         fallback_threshold: float = 0.5,
     ) -> Dict[str, Any]:
         """Performs inference and evaluates production binary decision."""
         score, heatmap, mask, transform = self.predict(image_input)
-        effective_threshold = self.threshold if self.threshold is not None else fallback_threshold
+        if custom_threshold is not None:
+            effective_threshold = custom_threshold
+        elif self.threshold is not None:
+            effective_threshold = self.threshold
+        else:
+            effective_threshold = fallback_threshold
+
         is_defect = bool(score >= effective_threshold)
         return {
             "is_defect": is_defect,

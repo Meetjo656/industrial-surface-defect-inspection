@@ -92,14 +92,14 @@ def test_production_decision_threshold(dummy_surface_image):
     model = AnomalyModel.load(model_path)
 
     # Test decision with low threshold -> DEFECTIVE
-    res_defective = model.predict_decision(dummy_surface_image, fallback_threshold=-1.0)
+    res_defective = model.predict_decision(dummy_surface_image, custom_threshold=-1.0)
     assert res_defective["is_defect"] is True
     assert res_defective["verdict"] == "DEFECTIVE"
     assert "score" in res_defective
     assert "threshold" in res_defective
 
     # Test decision with high threshold -> NORMAL
-    res_normal = model.predict_decision(dummy_surface_image, fallback_threshold=100.0)
+    res_normal = model.predict_decision(dummy_surface_image, custom_threshold=100.0)
     assert res_normal["is_defect"] is False
     assert res_normal["verdict"] == "NORMAL"
 
