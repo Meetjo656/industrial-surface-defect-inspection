@@ -1,3 +1,19 @@
+---
+title: Industrial Surface Defect Inspection
+emoji: 🏭
+colorFrom: blue
+colorTo: red
+sdk: gradio
+sdk_version: 6.30.0
+app_file: app.py
+pinned: false
+license: mit
+tags:
+  - anomaly-detection
+  - computer-vision
+  - industrial-inspection
+---
+
 # Industrial Surface Defect Inspection
 
 An end-to-end computer vision pipeline for automated surface defect detection and localization on industrial components (MVTec AD `metal_nut` dataset).
