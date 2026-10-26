@@ -21,18 +21,13 @@ data/
 *.h5
 *.hdf5
 *.pkl
-!outputs/full_dataset_model.pkl
-!full_dataset_model.pkl
-*.joblib
-*.weights
-
-# ==========================================
-# Outputs, Runs & Artifacts
-# ==========================================
 outputs/*
 !outputs/.gitkeep
 !outputs/full_dataset_model.pkl
 !outputs/full_dataset_model.json
+!outputs/*_model.pkl
+!outputs/*_model.json
+!outputs/metrics.json
 runs/
 wandb/
 mlruns/

@@ -4,7 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
-from typing import Dict, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -16,43 +16,58 @@ if str(_REPO_ROOT) not in sys.path:
 from src.model import AnomalyModel
 
 HF_REPO_ID = os.getenv("HF_MODEL_REPO", "nerdyoutlier/Industrial_Surface_Defect_Inspection")
-HF_FILENAME = os.getenv("HF_MODEL_FILENAME", "outputs/full_dataset_model.pkl")
+CATEGORIES = [
+    "full_dataset",
+    "bottle",
+    "cable",
+    "capsule",
+    "carpet",
+    "grid",
+    "hazelnut",
+    "leather",
+    "metal_nut",
+    "pill",
+    "screw",
+    "tile",
+    "toothbrush",
+    "transistor",
+    "wood",
+    "zipper",
+]
+
+
+def resolve_category_model_path(category: str = "full_dataset") -> Path:
+    """Finds local model or downloads category-specific model from Hugging Face."""
+    filename = f"{category}_model.pkl"
+    local_path = Path("outputs") / filename
+    if local_path.exists():
+        return local_path
+
+    alt_path = Path(filename)
+    if alt_path.exists():
+        return alt_path
+
+    # Hugging Face download fallback
+    try:
+        from huggingface_hub import hf_hub_download
+        print(f"[*] Downloading {category} model from HF repo '{HF_REPO_ID}'...")
+        downloaded = hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=f"outputs/{filename}",
+        )
+        return Path(downloaded)
+    except Exception as e:
+        print(f"[!] Warning: HF download error for {category} ({e})")
+        return local_path
 
 
 def ensure_model_artifact(model_path: Union[str, Path] = None) -> Path:
-    """Resolves local artifact or downloads versioned model from Hugging Face Hub during startup."""
+    """Resolves default model artifact."""
     if model_path:
         p = Path(model_path)
         if p.exists():
             return p
-
-    candidates = [
-        Path("outputs/full_dataset_model.pkl"),
-        Path("full_dataset_model.pkl"),
-        Path("outputs/metal_nut_isolation_forest.pkl"),
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-
-    # Download from Hugging Face Model Hub during Space/Render startup
-    try:
-        from huggingface_hub import hf_hub_download
-        print(f"[*] Downloading model from Hugging Face repo '{HF_REPO_ID}/{HF_FILENAME}'...")
-        try:
-            downloaded = hf_hub_download(
-                repo_id=HF_REPO_ID,
-                filename=HF_FILENAME,
-            )
-        except Exception:
-            downloaded = hf_hub_download(
-                repo_id=HF_REPO_ID,
-                filename="full_dataset_model.pkl",
-            )
-        return Path(downloaded)
-    except Exception as e:
-        print(f"[!] Note: Hugging Face download fallback ({e})")
-        return candidates[0]
+    return resolve_category_model_path("full_dataset")
 
 
 def get_default_model_path() -> Path:
@@ -60,69 +75,61 @@ def get_default_model_path() -> Path:
 
 
 class DefectInspectionApp:
-    """Core inference engine for Gradio deployment."""
+    """Core multi-category inference engine for Gradio deployment."""
 
-    def __init__(self, model_path: Union[str, Path], dataset_dir: Union[str, Path] = "dataset"):
-        self.model_path = Path(model_path)
-        self.dataset_dir = Path(dataset_dir)
-        self.model = None
-        if self.model_path.exists():
-            self.model = AnomalyModel.load(self.model_path)
-            if self.model.threshold is None:
-                self.calibrate_threshold(n_samples=10)
+    def __init__(self, initial_model_path: Union[str, Path] = None):
+        self.models: Dict[str, AnomalyModel] = {}
+        if initial_model_path and Path(initial_model_path).exists():
+            init_p = Path(initial_model_path)
+            cat_name = init_p.stem.replace("_model", "")
+            try:
+                self.models[cat_name] = AnomalyModel.load(init_p)
+            except Exception as e:
+                print(f"[!] Error loading {init_p}: {e}")
 
-    def calibrate_threshold(self, n_samples: int = 10) -> float:
-        """Calibrates production threshold on a 10-image balanced validation set."""
-        if self.model is None or not self.dataset_dir.exists():
-            return 0.5
+    def get_or_load_model(self, category: str) -> Optional[AnomalyModel]:
+        """Loads and caches category model on demand."""
+        if category in self.models:
+            return self.models[category]
 
-        normal_imgs = sorted(
-            list(self.dataset_dir.glob("*/test/good/*.png")) + list(self.dataset_dir.glob("*/test/good/*.jpg"))
-        )
-        defect_imgs = sorted([
-            p for p in (list(self.dataset_dir.glob("*/test/*/*.png")) + list(self.dataset_dir.glob("*/test/*/*.jpg")))
-            if p.parent.name != "good"
-        ])
+        model_path = resolve_category_model_path(category)
+        if model_path.exists():
+            try:
+                model = AnomalyModel.load(model_path)
+                self.models[category] = model
+                return model
+            except Exception as e:
+                print(f"[!] Error loading model {model_path}: {e}")
+                return None
+        return None
 
-        if not normal_imgs or not defect_imgs:
-            self.model.set_threshold(0.5)
-            return 0.5
+    def get_category_threshold(self, category: str) -> float:
+        """Returns pre-calibrated threshold for selected category."""
+        model = self.get_or_load_model(category)
+        if model and model.threshold is not None:
+            return round(float(model.threshold), 4)
+        return 0.5
 
-        n_norm = n_samples // 2
-        n_def = n_samples - n_norm
-        val_imgs = normal_imgs[:n_norm] + defect_imgs[:n_def]
-        y_true = [0] * len(val_imgs[:n_norm]) + [1] * len(val_imgs[n_norm:])
-
-        y_score = []
-        for p in val_imgs:
-            score, _, _, _ = self.model.predict(p)
-            y_score.append(score)
-
-        from sklearn.metrics import precision_recall_curve
-        precisions, recalls, thresholds = precision_recall_curve(y_true, y_score)
-        f1_scores = (2 * precisions * recalls) / np.maximum(precisions + recalls, 1e-8)
-        best_idx = int(np.argmax(f1_scores[:-1])) if len(thresholds) > 0 else 0
-        calibrated_thresh = float(thresholds[best_idx]) if len(thresholds) > 0 else float(np.mean(y_score))
-
-        self.model.set_threshold(calibrated_thresh)
-        try:
-            self.model.save(self.model_path)
-            print(f"[OK] Calibrated threshold on {len(val_imgs)} validation images: {calibrated_thresh:.4f}")
-        except Exception as e:
-            print(f"[!] Warning: Could not save calibrated model: {e}")
-
-        return calibrated_thresh
-
-    def inspect(self, image: np.ndarray, custom_threshold: float = None):
+    def inspect(self, image: np.ndarray, category: str = "full_dataset", custom_threshold: float = None):
         if image is None:
             return None, None, None, "Please upload or select an image."
 
-        if self.model is None:
-            return None, None, None, f"Model not found at {self.model_path}. Train model first."
+        # Fallback if category model not present
+        if category not in self.models and "full_dataset" in self.models:
+            category = "full_dataset"
+        elif not self.models and category is None:
+            category = "full_dataset"
 
-        score, heatmap, mask, transform = self.model.predict(image)
+        model = self.get_or_load_model(category)
+        if model is None and self.models:
+            model = next(iter(self.models.values()))
+            category = next(iter(self.models.keys()))
+        if model is None:
+            return None, None, None, f"Model for '{category}' not found. Please train or upload model."
+
+        score, heatmap, mask, transform = model.predict(image)
         thresh = custom_threshold if custom_threshold is not None else (
-            self.model.threshold if self.model.threshold is not None else 0.5
+            model.threshold if model.threshold is not None else 0.5
         )
 
         is_defect = bool(score >= thresh)
@@ -142,10 +149,11 @@ class DefectInspectionApp:
         defect_mask = (heatmap >= thresh).astype(np.uint8) * 255
 
         summary_md = (
+            f"### Category: **{category.upper()}**\n\n"
             f"### Verdict: <span style='color:{status_color}; font-size:1.4em; font-weight:bold;'>{verdict}</span>\n\n"
             f"- **Anomaly Score:** `{score:.4f}`\n"
             f"- **Decision Threshold:** `{thresh:.4f}`\n"
-            f"- **Status:** {'Defect identified above threshold' if is_defect else 'Clean surface within normal limits'}"
+            f"- **Status:** {'Defect identified above calibrated threshold' if is_defect else 'Clean surface within normal limits'}"
         )
 
         return overlay, defect_mask, norm_hm, summary_md
@@ -154,15 +162,9 @@ class DefectInspectionApp:
 def create_gradio_app(model_path: Union[str, Path] = None):
     import gradio as gr
 
-    if model_path is None:
-        model_path = get_default_model_path()
-
     app_engine = DefectInspectionApp(model_path)
-    default_thresh = (
-        app_engine.model.threshold
-        if app_engine.model and app_engine.model.threshold is not None
-        else 0.5
-    )
+    default_cat = "screw" if "screw" in CATEGORIES else "full_dataset"
+    default_thresh = app_engine.get_category_threshold(default_cat)
 
     with gr.Blocks(title="Industrial Surface Defect Inspection") as demo:
         gr.Markdown(
@@ -172,14 +174,20 @@ def create_gradio_app(model_path: Union[str, Path] = None):
 
         with gr.Row():
             with gr.Column(scale=1):
+                category_dropdown = gr.Dropdown(
+                    choices=CATEGORIES,
+                    value=default_cat,
+                    label="Material / Object Category",
+                    info="Select target industrial surface category for dedicated calibrated anomaly model.",
+                )
                 input_img = gr.Image(type="numpy", label="Input Surface Image")
                 thresh_slider = gr.Slider(
                     minimum=0.0,
                     maximum=1.0,
-                    value=round(float(default_thresh), 4),
-                    step=0.01,
+                    value=default_thresh,
+                    step=0.005,
                     label="Decision Threshold",
-                    info="Threshold to flag an anomaly (calibrated on validation data).",
+                    info="Threshold to flag an anomaly (auto-calibrated per category).",
                 )
                 inspect_btn = gr.Button("Inspect Surface", variant="primary")
 
@@ -192,9 +200,19 @@ def create_gradio_app(model_path: Union[str, Path] = None):
                 with gr.Tab("Raw Heatmap"):
                     output_raw_hm = gr.Image(label="Patch Anomaly Intensity")
 
+        def update_thresh_on_category_change(cat):
+            new_thresh = app_engine.get_category_threshold(cat)
+            return gr.update(value=new_thresh)
+
+        category_dropdown.change(
+            fn=update_thresh_on_category_change,
+            inputs=[category_dropdown],
+            outputs=[thresh_slider],
+        )
+
         inspect_btn.click(
             fn=app_engine.inspect,
-            inputs=[input_img, thresh_slider],
+            inputs=[input_img, category_dropdown, thresh_slider],
             outputs=[output_overlay, output_mask, output_raw_hm, result_markdown],
         )
 

@@ -1,0 +1,8 @@
+{
+  "patch_size": 16,
+  "stride": 16,
+  "min_fg": 0.5,
+  "threshold": 0.5658503593503066,
+  "n_estimators": 100,
+  "contamination": "auto"
+}
