@@ -28,6 +28,7 @@ outputs/*
 !outputs/*_model.pkl
 !outputs/*_model.json
 !outputs/metrics.json
+!outputs/category_thresholds.json
 runs/
 wandb/
 mlruns/

@@ -1,0 +1,18 @@
+{
+  "bottle": 0.5895,
+  "cable": 0.5715,
+  "capsule": 0.6045,
+  "hazelnut": 0.49,
+  "metal_nut": 0.518,
+  "pill": 0.556,
+  "screw": 0.527,
+  "toothbrush": 0.558,
+  "transistor": 0.5165,
+  "zipper": 0.4745,
+  "carpet": 0.4785,
+  "grid": 0.485,
+  "leather": 0.4535,
+  "tile": 0.474,
+  "wood": 0.46,
+  "full_dataset": 0.52
+}

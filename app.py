@@ -1,6 +1,7 @@
 """Gradio Web Deployment Application for Industrial Surface Defect Inspection."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import sys
@@ -13,7 +14,7 @@ _REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.model import AnomalyModel
+from src.model import AnomalyModel, DEFAULT_CATEGORY_THRESHOLDS
 
 HF_REPO_ID = os.getenv("HF_MODEL_REPO", "nerdyoutlier/Industrial_Surface_Defect_Inspection")
 CATEGORIES = [
@@ -34,6 +35,20 @@ CATEGORIES = [
     "wood",
     "zipper",
 ]
+
+
+def load_dynamic_category_thresholds() -> Dict[str, float]:
+    """Loads calibrated dynamic thresholds per category from outputs."""
+    thresh_path = Path("outputs") / "category_thresholds.json"
+    if thresh_path.exists():
+        try:
+            with open(thresh_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {k: float(v) for k, v in data.items()}
+        except Exception as e:
+            print(f"[!] Warning reading category_thresholds.json: {e}")
+    return dict(DEFAULT_CATEGORY_THRESHOLDS)
 
 
 def resolve_category_model_path(category: str = "full_dataset") -> Path:
@@ -79,6 +94,8 @@ class DefectInspectionApp:
 
     def __init__(self, initial_model_path: Union[str, Path] = None):
         self.models: Dict[str, AnomalyModel] = {}
+        self.dynamic_thresholds = load_dynamic_category_thresholds()
+
         if initial_model_path and Path(initial_model_path).exists():
             init_p = Path(initial_model_path)
             cat_name = init_p.stem.replace("_model", "")
@@ -104,11 +121,15 @@ class DefectInspectionApp:
         return None
 
     def get_category_threshold(self, category: str) -> float:
-        """Returns pre-calibrated threshold for selected category."""
+        """Returns dynamic calibrated threshold for selected category."""
+        if category in self.dynamic_thresholds:
+            return round(float(self.dynamic_thresholds[category]), 4)
+
         model = self.get_or_load_model(category)
-        if model and model.threshold is not None:
-            return round(float(model.threshold), 4)
-        return 0.59
+        if model:
+            return round(float(model.get_threshold(category)), 4)
+
+        return round(float(DEFAULT_CATEGORY_THRESHOLDS.get(category, 0.52)), 4)
 
     def inspect(self, image: np.ndarray, category: str = "full_dataset", custom_threshold: float = None):
         if image is None:
@@ -127,13 +148,23 @@ class DefectInspectionApp:
         if model is None:
             return None, None, None, f"Model for '{category}' not found. Please train or upload model."
 
-        score, heatmap, mask, transform = model.predict(image)
-        thresh = custom_threshold if custom_threshold is not None else (
-            model.threshold if model.threshold is not None else 0.59
+        thresh = (
+            custom_threshold
+            if custom_threshold is not None
+            else self.get_category_threshold(category)
         )
 
-        is_defect = bool(score >= thresh)
-        verdict = "DEFECTIVE" if is_defect else "NORMAL"
+        decision_res = model.predict_decision(
+            image,
+            category=category,
+            custom_threshold=thresh,
+        )
+
+        score = decision_res["score"]
+        heatmap = decision_res["heatmap"]
+        is_defect = decision_res["is_defect"]
+        verdict = decision_res["verdict"]
+        effective_thresh = decision_res["threshold"]
         status_color = "#ef4444" if is_defect else "#22c55e"
 
         # Colorize anomaly heatmap
@@ -145,15 +176,17 @@ class DefectInspectionApp:
         canvas_img = cv2.resize(image, (canvas_w, canvas_h))
         overlay = cv2.addWeighted(canvas_img, 0.6, color_hm, 0.4, 0)
 
-        # Defect segmentation mask at decision threshold
-        defect_mask = (heatmap >= thresh).astype(np.uint8) * 255
+        # Defect segmentation mask at dynamic decision threshold
+        defect_mask = (heatmap >= effective_thresh).astype(np.uint8) * 255
 
+        algorithm_name = getattr(model, "algorithm", "patchcore").upper()
         summary_md = (
             f"### Category: **{category.upper()}**\n\n"
             f"### Verdict: <span style='color:{status_color}; font-size:1.4em; font-weight:bold;'>{verdict}</span>\n\n"
+            f"- **Algorithm:** `{algorithm_name}`\n"
             f"- **Anomaly Score:** `{score:.4f}`\n"
-            f"- **Decision Threshold:** `{thresh:.4f}`\n"
-            f"- **Status:** {'Defect identified above calibrated threshold' if is_defect else 'Clean surface within normal limits'}"
+            f"- **Dynamic Threshold:** `{effective_thresh:.4f}`\n"
+            f"- **Status:** {'Defect identified above dynamic category threshold' if is_defect else 'Clean surface within normal limits'}"
         )
 
         return overlay, defect_mask, norm_hm, summary_md
@@ -163,13 +196,13 @@ def create_gradio_app(model_path: Union[str, Path] = None):
     import gradio as gr
 
     app_engine = DefectInspectionApp(model_path)
-    default_cat = "screw" if "screw" in CATEGORIES else "full_dataset"
+    default_cat = "bottle" if "bottle" in CATEGORIES else "full_dataset"
     default_thresh = app_engine.get_category_threshold(default_cat)
 
     with gr.Blocks(title="Industrial Surface Defect Inspection") as demo:
         gr.Markdown(
             "# 🏭 Industrial Surface Defect Inspection\n"
-            "Automated defect detection and localization using patch-based Isolation Forest anomaly modeling."
+            "Automated defect detection and localization with PatchCore memory bank and dynamic per-category thresholds."
         )
 
         with gr.Row():
@@ -177,8 +210,8 @@ def create_gradio_app(model_path: Union[str, Path] = None):
                 category_dropdown = gr.Dropdown(
                     choices=CATEGORIES,
                     value=default_cat,
-                    label="Material / Object Category",
-                    info="Select target industrial surface category for dedicated calibrated anomaly model.",
+                    label="Material / Object Category (10 Types + 5 Textures)",
+                    info="Select target industrial category for dedicated calibrated anomaly model.",
                 )
                 input_img = gr.Image(type="numpy", label="Input Surface Image")
                 thresh_slider = gr.Slider(
@@ -187,7 +220,7 @@ def create_gradio_app(model_path: Union[str, Path] = None):
                     value=default_thresh,
                     step=0.005,
                     label="Decision Threshold",
-                    info="Threshold to flag an anomaly (auto-calibrated per category).",
+                    info="Auto-calibrated dynamic threshold for each surface category.",
                 )
                 inspect_btn = gr.Button("Inspect Surface", variant="primary")
 
@@ -248,7 +281,7 @@ def main():
     demo.launch(
         server_name="0.0.0.0",
         server_port=args.port,
-        share=args.share
+        share=args.share,
     )
 
 

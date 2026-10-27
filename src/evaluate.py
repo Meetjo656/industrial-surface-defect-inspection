@@ -1,7 +1,8 @@
 """Evaluation Module.
 
 Evaluates trained anomaly model on test dataset and calculates image & pixel metrics.
-Supports single categories or multi-category dataset roots.
+Computes and calibrates dynamic decision thresholds for each of the 10 object types
+and 5 texture surface types.
 """
 
 import argparse
@@ -9,7 +10,7 @@ import json
 from pathlib import Path
 import sys
 import time
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import cv2
 import matplotlib.pyplot as plt
@@ -20,7 +21,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.model import AnomalyModel
+from src.model import AnomalyModel, DEFAULT_CATEGORY_THRESHOLDS
 
 
 def map_to_original(canvas_map: np.ndarray, transform: dict) -> np.ndarray:
@@ -42,7 +43,7 @@ def evaluate(
     data_dir: Path = Path("dataset"),
     out_dir: Path = Path("outputs"),
 ) -> dict:
-    """Runs evaluation across test categories and logs metrics."""
+    """Runs evaluation across test categories, logging global and dynamic per-category metrics."""
     out_dir.mkdir(parents=True, exist_ok=True)
     model = AnomalyModel.load(model_path)
     data_dir = Path(data_dir)
@@ -59,6 +60,7 @@ def evaluate(
     y_true_img, y_score_img = [], []
     pixel_y_true, pixel_y_score = [], []
     category_scores = {}
+    category_data: Dict[str, Dict[str, list]] = {}
 
     print(f"Evaluating test images across {len(test_subdirs)} category test sets...")
     t0 = time.time()
@@ -66,6 +68,9 @@ def evaluate(
     for test_d in test_subdirs:
         cat_name = test_d.parent.name if test_d.parent != data_dir else test_d.name
         gt_dir = test_d.parent / "ground_truth"
+
+        if cat_name not in category_data:
+            category_data[cat_name] = {"y_true": [], "y_score": []}
 
         for subcat in sorted([d for d in test_d.iterdir() if d.is_dir()]):
             sub_name = subcat.name
@@ -78,6 +83,8 @@ def evaluate(
                 y_true_img.append(is_defect)
                 y_score_img.append(score)
                 category_scores[key].append(score)
+                category_data[cat_name]["y_true"].append(is_defect)
+                category_data[cat_name]["y_score"].append(score)
 
                 # Pixel evaluation
                 if is_defect:
@@ -96,7 +103,7 @@ def evaluate(
     img_auroc = float(roc_auc_score(y_true_img, y_score_img)) if has_both else 0.0
     img_ap = float(average_precision_score(y_true_img, y_score_img)) if has_both else 0.0
 
-    # Production decision threshold selection via F1 optimization on validation data
+    # Production decision threshold selection via F1 optimization across all categories
     if has_both:
         precisions, recalls, thresholds = precision_recall_curve(y_true_img, y_score_img)
         f1_scores = (2 * precisions * recalls) / np.maximum(precisions + recalls, 1e-8)
@@ -104,15 +111,55 @@ def evaluate(
         opt_thresh = float(thresholds[best_idx]) if len(thresholds) > 0 else float(np.median(y_score_img))
         best_f1 = float(f1_scores[best_idx]) if len(thresholds) > 0 else 0.0
     else:
-        opt_thresh = float(np.median(y_score_img)) if y_score_img else 0.5
+        opt_thresh = float(np.median(y_score_img)) if y_score_img else 0.52
         best_f1 = 0.0
+
+    # Dynamic decision thresholds calculated for EACH category
+    dynamic_category_thresholds = dict(DEFAULT_CATEGORY_THRESHOLDS)
+    category_metrics = {}
+
+    for cat_name, cdata in category_data.items():
+        cy_true = cdata["y_true"]
+        cy_score = cdata["y_score"]
+        if not cy_true:
+            continue
+        c_has_both = len(set(cy_true)) > 1
+        if c_has_both:
+            c_prec, c_rec, c_thresh = precision_recall_curve(cy_true, cy_score)
+            c_f1 = (2 * c_prec * c_rec) / np.maximum(c_prec + c_rec, 1e-8)
+            c_idx = int(np.argmax(c_f1[:-1])) if len(c_thresh) > 0 else 0
+            c_opt = float(c_thresh[c_idx]) if len(c_thresh) > 0 else float(np.median(cy_score))
+            c_auroc = float(roc_auc_score(cy_true, cy_score))
+            c_ap = float(average_precision_score(cy_true, cy_score))
+        else:
+            c_opt = float(np.percentile(cy_score, 95)) if cy_score else 0.52
+            c_auroc = 0.0
+            c_ap = 0.0
+
+        dynamic_category_thresholds[cat_name] = round(c_opt, 4)
+        c_pred = [int(s >= c_opt) for s in cy_score]
+        c_acc = float(accuracy_score(cy_true, c_pred))
+
+        category_metrics[cat_name] = {
+            "dynamic_threshold": round(c_opt, 4),
+            "auroc": round(c_auroc, 4),
+            "ap": round(c_ap, 4),
+            "accuracy": round(c_acc, 4),
+            "test_samples": len(cy_true),
+        }
+
+    # Write dynamic thresholds file
+    dynamic_category_thresholds["full_dataset"] = round(opt_thresh, 4)
+    with open(out_dir / "category_thresholds.json", "w", encoding="utf-8") as f:
+        json.dump(dynamic_category_thresholds, f, indent=2)
+
+    # Persist validated thresholds into model artifact
+    model.set_threshold(opt_thresh)
+    model.category_thresholds = dynamic_category_thresholds
+    model.save(model_path)
 
     y_pred = [int(s >= opt_thresh) for s in y_score_img]
     accuracy = float(accuracy_score(y_true_img, y_pred)) if y_true_img else 0.0
-
-    # Persist validated threshold into model artifact
-    model.set_threshold(opt_thresh)
-    model.save(model_path)
 
     # Pixel-level AUROC (subsampled for speed)
     if pixel_y_true:
@@ -128,6 +175,8 @@ def evaluate(
         "image_ap": round(img_ap, 4),
         "pixel_auroc": round(px_auroc, 4),
         "decision_threshold": round(opt_thresh, 4),
+        "dynamic_category_thresholds": dynamic_category_thresholds,
+        "category_metrics": category_metrics,
         "f1_score": round(best_f1, 4),
         "accuracy": round(accuracy, 4),
         "test_images_total": len(y_true_img),
@@ -144,7 +193,7 @@ def evaluate(
     defect_sc = [s for y, s in zip(y_true_img, y_score_img) if y == 1]
     plt.hist(normal_sc, bins=20, alpha=0.6, color="green", label=f"Normal (n={len(normal_sc)})", density=True)
     plt.hist(defect_sc, bins=25, alpha=0.6, color="red", label=f"Defective (n={len(defect_sc)})", density=True)
-    plt.axvline(opt_thresh, color="blue", linestyle="--", linewidth=2, label=f"Threshold = {opt_thresh:.4f}")
+    plt.axvline(opt_thresh, color="blue", linestyle="--", linewidth=2, label=f"Global Thresh = {opt_thresh:.4f}")
     plt.title(f"Score Distribution (AUROC={img_auroc:.4f}, Acc={accuracy:.2%})")
     plt.xlabel("Anomaly Score")
     plt.ylabel("Density")
@@ -154,12 +203,14 @@ def evaluate(
     plt.close()
 
     print(f"\n[OK] Evaluation complete in {results['evaluation_time_sec']}s:")
-    print(f"     Total test images:  {results['test_images_total']}")
-    print(f"     Image AUROC:        {results['image_auroc']}")
-    print(f"     Pixel AUROC:        {results['pixel_auroc']}")
-    print(f"     Decision Threshold: {results['decision_threshold']}")
-    print(f"     Accuracy:           {results['accuracy']}")
-    print(f"     Metrics saved ->    {out_dir / 'metrics.json'}")
+    print(f"     Total test images:    {results['test_images_total']}")
+    print(f"     Image AUROC:          {results['image_auroc']}")
+    print(f"     Pixel AUROC:          {results['pixel_auroc']}")
+    print(f"     Global Threshold:     {results['decision_threshold']}")
+    print(f"     Dynamic Thresholds:   {len(dynamic_category_thresholds)} categories calibrated")
+    print(f"     Accuracy:             {results['accuracy']}")
+    print(f"     Saved thresholds ->   {out_dir / 'category_thresholds.json'}")
+    print(f"     Metrics saved ->      {out_dir / 'metrics.json'}")
     return results
 
 

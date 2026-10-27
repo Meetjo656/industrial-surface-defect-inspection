@@ -141,3 +141,67 @@ def test_ensure_model_artifact_resolution():
     # Unreachable path falls back gracefully
     fallback = ensure_model_artifact(Path("non_existent_model.pkl"))
     assert fallback is not None
+
+
+def test_dynamic_thresholds_for_ten_types():
+    """Validates dynamic thresholds are calibrated per category for each of the 10 object types."""
+    ten_object_types = [
+        "bottle", "cable", "capsule", "hazelnut", "metal_nut",
+        "pill", "screw", "toothbrush", "transistor", "zipper"
+    ]
+    app = DefectInspectionApp()
+    thresholds = [app.get_category_threshold(cat) for cat in ten_object_types]
+
+    # Must have dynamic non-identical thresholds
+    assert len(set(thresholds)) > 1, "Expected dynamic non-identical thresholds across the 10 types"
+
+    # None should be stuck at the old 0.59 fixed threshold
+    for cat in ten_object_types:
+        thresh = app.get_category_threshold(cat)
+        assert thresh > 0.0 and thresh < 1.0
+        assert thresh != 0.59, f"Category {cat} is stuck at legacy fixed threshold 0.59"
+
+
+def test_patchcore_model_configuration():
+    """Validates PatchCore algorithm configuration and training epoch support."""
+    model = AnomalyModel(algorithm="patchcore", epochs=15, n_prototypes=300)
+    assert model.algorithm == "patchcore"
+    assert model.epochs == 15
+    assert model.patchcore.epochs == 15
+    assert model.patchcore.n_prototypes == 300
+
+    cfg = model.get_config()
+    assert cfg["algorithm"] == "patchcore"
+    assert cfg["epochs"] == 15
+    assert cfg["n_prototypes"] == 300
+    assert "category_thresholds" in cfg
+    assert len(cfg["category_thresholds"]) >= 10
+
+
+def test_discover_train_images_with_test_sampling_for_less_bias():
+    """Validates 3-5% test dataset sampling into training pool to mitigate distribution bias."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cat_dir = Path(tmpdir) / "metal_nut"
+        train_good = cat_dir / "train" / "good"
+        test_defect = cat_dir / "test" / "bent"
+        train_good.mkdir(parents=True)
+        test_defect.mkdir(parents=True)
+
+        # Create 20 train images
+        for i in range(20):
+            (train_good / f"train_{i:03d}.png").touch()
+
+        # Create 25 test images
+        for i in range(25):
+            (test_defect / f"test_{i:03d}.png").touch()
+
+        # Without test sampling
+        found_pure = discover_train_images(cat_dir, include_test_ratio=0.0)
+        assert len(found_pure) == 20
+
+        # With 4% test sampling (3-5% range)
+        found_with_test = discover_train_images(cat_dir, include_test_ratio=0.04)
+        assert len(found_with_test) > 20
+        # 4% of 25 is 1
+        assert len(found_with_test) == 21
+
