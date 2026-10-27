@@ -12,6 +12,7 @@ import sys
 import time
 from typing import Dict, Optional, Tuple, Union
 
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
